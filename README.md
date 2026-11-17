@@ -63,7 +63,9 @@ Temperature:  22.6 °C / 72.7 °F
 Humidity:     60%
 Unit:         Fahrenheit
 Battery:      24%
-```The time is shown the way the clock's display shows it (UTC timestamp plus the timezone byte).
+```
+
+The time is shown the way the clock's display shows it (UTC timestamp plus the timezone byte).
 
 `-v` / `--verbose` (before the command, e.g. `./miaoclock -v read`) adds progress messages on stderr (`scanning...`,
 `using <MAC>`) and switches to the raw technical view: the unix time and timezone byte, the unit byte, both
