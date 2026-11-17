@@ -17,14 +17,26 @@ go build -o miaoclock .
 
 macOS will ask for Bluetooth permission for your terminal the first time.
 
-The device is found by address in `main.go` (`miclockId`). On macOS, CoreBluetooth hides the real MAC address and
-exposes a per-computer UUID instead, so **you must change this constant to your own device's address**. On
-Linux/Windows it should be the MAC address. To find it, scan and look for a device named `LYWSD02`.
+## Choosing the clock
+
+By default `miaoclock` scans for about 5 seconds and uses the LYWSD02 it finds. If it finds more than one, it lists
+them and exits so you can choose. To pick one explicitly, give its MAC address:
+
+```
+./miaoclock scan                       # lists nearby devices; clocks are marked "<== LYWSD02 MAC ..."
+./miaoclock -d AA:BB:CC:DD:EE:FF read  # or: export MIAOCLOCK_DEVICE=AA:BB:CC:DD:EE:FF
+```
+
+How the clock is recognized: it advertises no name, but it broadcasts Xiaomi MiBeacon service data (UUID `fe95`)
+containing product ID `0x045B` (LYWSD02) and its real MAC address (in reverse byte order). The MAC is therefore
+available even on macOS, where CoreBluetooth otherwise hides it and exposes only a per-computer UUID. `-d` also
+accepts that platform address (the UUID on macOS) if you prefer.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
+| `scan [seconds]` | Lists nearby BLE devices with their advertised data; LYWSD02 clocks are marked with their MAC (default 10 s) |
 | `read` | Clock, unit, battery, plus one live temperature/humidity reading |
 | `history` | Dumps stored hourly records as CSV (`idx,time,tmax_c,hmax,tmin_c,hmin`) on stdout; count on stderr |
 | `poll [seconds]` | Read-only: snapshots every readable characteristic every 2 s and prints what changes (default 180 s) |

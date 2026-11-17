@@ -5,16 +5,22 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"strings"
+	"sync"
 	"time"
 
 	"tinygo.org/x/bluetooth"
 )
 
-// On macOS, CoreBluetooth hides the MAC and exposes a per-host UUID instead.
-const miclockId = "cea7f141-01a5-7e65-1e60-21b898968922"
+// target selects the clock to talk to: a MAC address (AA:BB:CC:DD:EE:FF) or a
+// platform address (e.g. a CoreBluetooth UUID on macOS). Empty means
+// auto-detect, which works only if exactly one LYWSD02 is in range.
+var target = os.Getenv("MIAOCLOCK_DEVICE")
 
-const usage = `usage: miaoclock <command>
-  read              temperature, humidity, battery, clock, unit
+const usage = `usage: miaoclock [-d <mac|address>] <command>
+  -d, --device      which clock to use (default: $MIAOCLOCK_DEVICE, else auto-detect a single LYWSD02)
+  scan [seconds]    list nearby BLE devices; LYWSD02 clocks are marked with their MAC
+  read             temperature, humidity, battery, clock, unit
   history           dump stored hourly min/max records
   poll [seconds]    read-only: watch all readable characteristics, print changes (default 180s)
   set-time now|<RFC3339> [--tz <hours>]
@@ -42,12 +48,20 @@ func uuid(short string) bluetooth.UUID {
 }
 
 func main() {
+	if len(os.Args) > 2 && (os.Args[1] == "-d" || os.Args[1] == "--device") {
+		target = os.Args[2]
+		os.Args = append([]string{os.Args[0]}, os.Args[3:]...)
+	}
 	if len(os.Args) < 2 {
 		fmt.Println(usage)
 		os.Exit(2)
 	}
 	cmd := os.Args[1]
 	switch cmd {
+	case "scan":
+		must("enable BLE stack", adapter.Enable())
+		doScan()
+		return
 	case "read", "history", "set-time", "set-unit", "raw-unit", "poll":
 	default:
 		fmt.Println(usage)
@@ -118,34 +132,144 @@ func main() {
 	}
 }
 
+// doScan lists nearby BLE devices with what they advertise (read-only).
+func doScan() {
+	secs := 10
+	if len(os.Args) > 2 {
+		fmt.Sscanf(os.Args[2], "%d", &secs)
+	}
+	seen := map[string]bool{}
+	go func() {
+		err := adapter.Scan(func(a *bluetooth.Adapter, d bluetooth.ScanResult) {
+			addr := d.Address.String()
+			if seen[addr] {
+				return
+			}
+			seen[addr] = true
+			var svcs []string
+			for _, u := range d.ServiceUUIDs() {
+				svcs = append(svcs, u.String())
+			}
+			var mfr []string
+			for _, m := range d.ManufacturerData() {
+				mfr = append(mfr, fmt.Sprintf("%04x:%x", m.CompanyID, m.Data))
+			}
+			var sd []string
+			for _, s := range d.ServiceData() {
+				sd = append(sd, fmt.Sprintf("%s:%x", s.UUID.String(), s.Data))
+			}
+			mark := ""
+			if mac, ok := lywsdMAC(d); ok {
+				mark = "  <== LYWSD02 MAC " + mac
+			}
+			fmt.Printf("%s rssi=%d name=%q services=%v mfr=%v svcdata=%v%s\n", addr, d.RSSI, d.LocalName(), svcs, mfr, sd, mark)
+		})
+		must("scan", err)
+	}()
+	time.Sleep(time.Duration(secs) * time.Second)
+	adapter.StopScan()
+}
+
 func mustSvc() bluetooth.UUID {
 	u, err := bluetooth.ParseUUID(svcUUID)
 	must("parse uuid", err)
 	return u
 }
 
+// lywsdMAC reports whether the advertisement is from a LYWSD02, and its MAC.
+// The clock advertises Xiaomi MiBeacon service data (UUID fe95):
+//
+//	[0:2] frame control (bit 4 = MAC present), [2:4] product id (0x045b = LYWSD02),
+//	[4] frame counter, [5:11] MAC address in reverse byte order.
+func lywsdMAC(d bluetooth.ScanResult) (string, bool) {
+	for _, s := range d.ServiceData() {
+		if s.UUID.String() != "0000fe95-0000-1000-8000-00805f9b34fb" || len(s.Data) < 11 {
+			continue
+		}
+		b := s.Data
+		if binary.LittleEndian.Uint16(b[2:]) != 0x045b || b[0]&0x10 == 0 {
+			continue
+		}
+		return fmt.Sprintf("%02X:%02X:%02X:%02X:%02X:%02X", b[10], b[9], b[8], b[7], b[6], b[5]), true
+	}
+	return "", false
+}
+
+// matches reports whether a scan result is the selected clock.
+func matches(d bluetooth.ScanResult) bool {
+	mac, isClock := lywsdMAC(d)
+	if target == "" {
+		return isClock
+	}
+	t := strings.ToUpper(strings.ReplaceAll(target, "-", ":"))
+	return strings.ToUpper(d.Address.String()) == t || (isClock && mac == t)
+}
+
 func connect() bluetooth.Device {
-	var found bluetooth.ScanResult
-	ok := make(chan struct{})
+	var mu sync.Mutex
+	cands := map[string]bluetooth.ScanResult{} // by address
 	fmt.Println("scanning...")
 	go func() {
 		err := adapter.Scan(func(a *bluetooth.Adapter, d bluetooth.ScanResult) {
-			if d.Address.String() == miclockId {
-				found = d
-				a.StopScan()
-				close(ok)
+			if !matches(d) {
+				return
 			}
+			mu.Lock()
+			cands[d.Address.String()] = d
+			mu.Unlock()
 		})
 		must("scan", err)
 	}()
-	select {
-	case <-ok:
-	case <-time.After(30 * time.Second):
-		panic("device not found in 30s")
+
+	// With an explicit target, take the first match. Otherwise listen for a few
+	// seconds so that more than one clock in range is noticed.
+	deadline := time.Now().Add(30 * time.Second)
+	settle := time.Time{}
+	for time.Now().Before(deadline) {
+		time.Sleep(200 * time.Millisecond)
+		mu.Lock()
+		n := len(cands)
+		mu.Unlock()
+		if n == 0 {
+			continue
+		}
+		if target != "" {
+			break
+		}
+		if settle.IsZero() {
+			settle = time.Now().Add(5 * time.Second)
+		} else if time.Now().After(settle) {
+			break
+		}
 	}
-	dev, err := adapter.Connect(found.Address, bluetooth.ConnectionParams{})
-	must("connect", err)
-	return dev
+	adapter.StopScan()
+
+	mu.Lock()
+	defer mu.Unlock()
+	switch len(cands) {
+	case 0:
+		if target == "" {
+			panic("no LYWSD02 found in 30s (try 'miaoclock scan')")
+		}
+		panic("device " + target + " not found in 30s (try 'miaoclock scan')")
+	case 1:
+	default:
+		fmt.Println("several LYWSD02 clocks in range; pick one with -d or MIAOCLOCK_DEVICE:")
+		for _, d := range cands {
+			mac, _ := lywsdMAC(d)
+			fmt.Printf("  %s (address %s, rssi %d)\n", mac, d.Address.String(), d.RSSI)
+		}
+		os.Exit(2)
+	}
+	for _, found := range cands {
+		if mac, ok := lywsdMAC(found); ok {
+			fmt.Printf("using %s (address %s)\n", mac, found.Address.String())
+		}
+		dev, err := adapter.Connect(found.Address, bluetooth.ConnectionParams{})
+		must("connect", err)
+		return dev
+	}
+	panic("unreachable")
 }
 
 func readAll(c bluetooth.DeviceCharacteristic) []byte {
