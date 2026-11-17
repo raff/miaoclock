@@ -37,7 +37,8 @@ accepts that platform address (the UUID on macOS) if you prefer.
 | Command | What it does |
 |---|---|
 | `scan [seconds] [--all]` | Lists nearby LYWSD02 clocks with their MAC (default 10 s). `--all` also shows every other BLE device |
-| `read` | Time, temperature (°C and °F), humidity, unit and battery. **Also what runs when you give no command** |
+| *(none)* | **Default with no command:** one compact line with the time, temperature (°C and °F), humidity and battery, in the same layout as `poll` |
+| `read` | The same values as a multi-line list, plus the display unit |
 | `history` | Prints the stored hourly records as CSV (`idx,time,tmax_c,hmax,tmin_c,hmin`, temperatures in °C) on stdout; takes about a minute |
 | `poll [seconds]` | Live monitor: prints the time, temperature (°C and °F) and humidity whenever they change (default 180 s). With `-v`, snapshots every readable characteristic every 2 s and prints the raw changes instead |
 | `set-time now` | Sets the clock from this computer's time and timezone offset |
@@ -52,14 +53,17 @@ By default the output is meant for people, and only data goes to stdout, so redi
 gives a clean file. Errors go to stderr and exit with status 1.
 
 ```
+$ ./miaoclock
+Time                 Temperature        Humidity  Battery
+2026-11-16 17:55:40  22.6 °C / 72.7 °F  60%       24%
+
 $ ./miaoclock read
-Time:         2026-11-16 17:45:13 (UTC-08:00)
-Temperature:  22.7 °C / 72.9 °F
+Time:         2026-11-16 17:55:40 (UTC-08:00)
+Temperature:  22.6 °C / 72.7 °F
 Humidity:     60%
 Unit:         Fahrenheit
 Battery:      24%
-```
-The time is shown the way the clock's display shows it (UTC timestamp plus the timezone byte).
+```The time is shown the way the clock's display shows it (UTC timestamp plus the timezone byte).
 
 `-v` / `--verbose` (before the command, e.g. `./miaoclock -v read`) adds progress messages on stderr (`scanning...`,
 `using <MAC>`) and switches to the raw technical view: the unix time and timezone byte, the unit byte, both

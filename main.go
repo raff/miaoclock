@@ -33,8 +33,8 @@ const usage = `usage: miaoclock [-d <mac|address>] [-v] <command>
   -v, --verbose     show progress messages and raw technical details
   scan [seconds] [--all]
                     list nearby LYWSD02 clocks with their MAC (--all: every BLE device)
-  read              show time, temperature (C and F), humidity, unit, battery.
-                    This is the default with no command.
+  (no command)      one compact line: time, temperature (C and F), humidity, battery
+  read              the same values as a multi-line list, plus the display unit
   history           print the stored hourly min/max records as CSV
   poll [seconds]    live monitor: print time, temperature and humidity on every change
                     (default 180s). With -v, show every raw characteristic change instead
@@ -84,7 +84,7 @@ parse:
 	}
 	os.Args = append([]string{os.Args[0]}, args...)
 	if len(os.Args) < 2 {
-		os.Args = append(os.Args, "read") // default: show the current values
+		os.Args = append(os.Args, "summary") // default: one compact line of current values
 	}
 	cmd := os.Args[1]
 	switch cmd {
@@ -95,7 +95,7 @@ parse:
 		must("enable BLE stack", adapter.Enable())
 		doScan()
 		return
-	case "read", "history", "set-time", "set-unit", "raw-unit", "poll":
+	case "read", "summary", "history", "set-time", "set-unit", "raw-unit", "poll":
 	default:
 		fmt.Println(usage)
 		os.Exit(2)
@@ -135,7 +135,9 @@ parse:
 
 	switch cmd {
 	case "read":
-		doRead(get)
+		doRead(get, false)
+	case "summary":
+		doRead(get, true)
 	case "history":
 		doHistory(get("ccbc"))
 	case "poll":
@@ -367,6 +369,11 @@ func fmtClock(ts int64, tz int8) string {
 	return fmt.Sprintf("%s (UTC%+03d:00)", t.Format("2006-01-02 15:04:05"), tz)
 }
 
+// fmtClockShort is fmtClock without the timezone suffix.
+func fmtClockShort(ts int64, tz int8) string {
+	return time.Unix(ts, 0).UTC().Add(time.Duration(tz) * time.Hour).Format("2006-01-02 15:04:05")
+}
+
 // waitReading waits for one live temperature (°C) and humidity (%) notification.
 func waitReading(c bluetooth.DeviceCharacteristic) (float64, int, bool) {
 	got := make(chan []byte, 1)
@@ -387,7 +394,9 @@ func waitReading(c bluetooth.DeviceCharacteristic) (float64, int, bool) {
 	return 0, 0, false
 }
 
-func doRead(get func(string) bluetooth.DeviceCharacteristic) {
+// doRead prints the current values once. compact selects the two-line,
+// poll-style layout (header + one data line) used when no command is given.
+func doRead(get func(string) bluetooth.DeviceCharacteristic, compact bool) {
 	tb := readAll(get("ccb7"))
 	ub := readAll(get("ccbe"))
 	bb := readAll(get("ccc4"))
@@ -403,6 +412,19 @@ func doRead(get func(string) bluetooth.DeviceCharacteristic) {
 		}
 		if ok {
 			fmt.Printf("temperature: %.2f °C / %.1f °F\nhumidity: %d%%\n", temp, temp*9/5+32, hum)
+		}
+	} else if compact {
+		clock, battery := "?", "?"
+		if len(tb) >= 5 {
+			clock = fmtClockShort(int64(binary.LittleEndian.Uint32(tb)), int8(tb[4]))
+		}
+		if len(bb) > 0 {
+			battery = fmt.Sprintf("%d%%", bb[0])
+		}
+		if ok {
+			fmt.Println("Time                 Temperature        Humidity  Battery")
+			fmt.Printf("%-19s  %-17s  %-8s  %s\n", clock,
+				fmt.Sprintf("%.1f °C / %.1f °F", temp, temp*9/5+32), fmt.Sprintf("%d%%", hum), battery)
 		}
 	} else {
 		if len(tb) >= 5 {
