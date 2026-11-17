@@ -69,6 +69,20 @@ Battery:      24%
 `using <MAC>`) and switches to the raw technical view: the unix time and timezone byte, the unit byte, both
 temperature units, raw bytes written by `set-time`, and the raw characteristic changes in `poll`.
 
+## Charting the history
+
+`plot.sh` fetches the stored history from the clock, plots it with [gnuplot](http://www.gnuplot.info/)
+(`brew install gnuplot`) using `plot.gp`, and opens the PNG: hourly min/max temperature on top, humidity below.
+
+```
+./plot.sh                          # fetch from the clock (about a minute), plot, open
+./plot.sh history.csv              # plot an existing CSV, without contacting the clock
+./plot.sh -n -o chart.png          # don't open the image; choose the output file
+```
+
+To keep the data for later: `./miaoclock history > history.csv`, then `./plot.sh history.csv`. Spreadsheets also
+work, but they usually don't recognize the `T` and timezone offset in the `time` column as a date.
+
 ## BLE protocol
 
 Everything useful is in service `ebe0ccb0-7a0a-4b0c-8a1a-6ff2997da3a6`. Below, `ccXX` stands for
