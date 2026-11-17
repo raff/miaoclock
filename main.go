@@ -85,7 +85,7 @@ func main() {
 	svcs, err := dev.DiscoverServices([]bluetooth.UUID{mustSvc()})
 	must("discover services", err)
 	if len(svcs) == 0 {
-		panic("clock service not found")
+		fatal("clock service not found on this device (is it really a LYWSD02?)")
 	}
 	chars, err := svcs[0].DiscoverCharacteristics(nil)
 	must("discover characteristics", err)
@@ -96,7 +96,7 @@ func main() {
 	get := func(short string) bluetooth.DeviceCharacteristic {
 		c, ok := byID[uuid(short).String()]
 		if !ok {
-			panic("characteristic not found: " + short)
+			fatal("characteristic not found: " + short)
 		}
 		return c
 	}
@@ -202,14 +202,20 @@ func lywsdMAC(d bluetooth.ScanResult) (string, bool) {
 	return "", false
 }
 
+// normID strips separators and case so MACs (AA:BB:.. or AA-BB-..) and UUIDs
+// (which contain dashes) compare equal regardless of how they were typed.
+func normID(s string) string {
+	return strings.ToUpper(strings.NewReplacer(":", "", "-", "", " ", "").Replace(s))
+}
+
 // matches reports whether a scan result is the selected clock.
 func matches(d bluetooth.ScanResult) bool {
 	mac, isClock := lywsdMAC(d)
 	if target == "" {
 		return isClock
 	}
-	t := strings.ToUpper(strings.ReplaceAll(target, "-", ":"))
-	return strings.ToUpper(d.Address.String()) == t || (isClock && mac == t)
+	t := normID(target)
+	return normID(d.Address.String()) == t || (isClock && normID(mac) == t)
 }
 
 func connect() bluetooth.Device {
@@ -256,9 +262,9 @@ func connect() bluetooth.Device {
 	switch len(cands) {
 	case 0:
 		if target == "" {
-			panic("no LYWSD02 found in 30s (try 'miaoclock scan')")
+			fatal("no LYWSD02 found in 30s (try 'miaoclock scan')")
 		}
-		panic("device " + target + " not found in 30s (try 'miaoclock scan')")
+		fatal("device " + target + " not found in 30s (try 'miaoclock scan')")
 	case 1:
 	default:
 		fmt.Println("several LYWSD02 clocks in range; pick one with -d or MIAOCLOCK_DEVICE:")
@@ -276,7 +282,8 @@ func connect() bluetooth.Device {
 		must("connect", err)
 		return dev
 	}
-	panic("unreachable")
+	fatal("no device selected")
+	return bluetooth.Device{}
 }
 
 func readAll(c bluetooth.DeviceCharacteristic) []byte {
@@ -450,8 +457,14 @@ func doHistory(c bluetooth.DeviceCharacteristic) {
 	fmt.Fprintf(os.Stderr, "%d records\n", count)
 }
 
+// fatal logs an error and exits with status 1.
+func fatal(msg string) {
+	fmt.Fprintln(os.Stderr, "miaoclock:", msg)
+	os.Exit(1)
+}
+
 func must(action string, err error) {
 	if err != nil {
-		panic("failed to " + action + ": " + err.Error())
+		fatal("failed to " + action + ": " + err.Error())
 	}
 }
