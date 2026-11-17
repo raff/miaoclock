@@ -17,13 +17,26 @@ import (
 // auto-detect, which works only if exactly one LYWSD02 is in range.
 var target = os.Getenv("MIAOCLOCK_DEVICE")
 
-const usage = `usage: miaoclock [-d <mac|address>] <command>
+// verbose enables progress messages (on stderr) and the raw/technical output
+// (unix time, raw bytes, characteristic changes). Set with -v / --verbose.
+var verbose bool
+
+// verbosef prints a progress message to stderr, only in verbose mode.
+func verbosef(format string, args ...any) {
+	if verbose {
+		fmt.Fprintf(os.Stderr, format+"\n", args...)
+	}
+}
+
+const usage = `usage: miaoclock [-d <mac|address>] [-v] <command>
   -d, --device      which clock to use (default: $MIAOCLOCK_DEVICE, else auto-detect a single LYWSD02)
+  -v, --verbose     show progress messages and raw technical details
   scan [seconds] [--all]
                     list nearby LYWSD02 clocks with their MAC (--all: every BLE device)
-  read             temperature, humidity, battery, clock, unit
-  history           dump stored hourly min/max records
-  poll [seconds]    read-only: watch all readable characteristics, print changes (default 180s)
+  read              show time, unit, battery, temperature and humidity
+  history           print the stored hourly min/max records as CSV
+  poll [seconds]    watch live temperature and humidity (default 180s);
+                    with -v, show every raw characteristic change instead
   set-time now|<RFC3339> [--tz <hours>]
                     set the clock: "now" uses this computer's time and timezone;
                     otherwise e.g. 2026-11-16T18:30:00-08:00 (offset becomes the clock's tz)
@@ -49,10 +62,25 @@ func uuid(short string) bluetooth.UUID {
 }
 
 func main() {
-	if len(os.Args) > 2 && (os.Args[1] == "-d" || os.Args[1] == "--device") {
-		target = os.Args[2]
-		os.Args = append([]string{os.Args[0]}, os.Args[3:]...)
+	args := os.Args[1:]
+parse:
+	for len(args) > 0 {
+		switch args[0] {
+		case "-d", "--device":
+			if len(args) < 2 {
+				fmt.Println(usage)
+				os.Exit(2)
+			}
+			target = args[1]
+			args = args[2:]
+		case "-v", "--verbose":
+			verbose = true
+			args = args[1:]
+		default:
+			break parse
+		}
 	}
+	os.Args = append([]string{os.Args[0]}, args...)
 	if len(os.Args) < 2 {
 		fmt.Println(usage)
 		os.Exit(2)
@@ -107,11 +135,13 @@ func main() {
 	case "history":
 		doHistory(get("ccbc"))
 	case "poll":
-		doPoll(byID, get("ccc1"))
+		doPoll(byID, get)
 	case "set-time":
 		setTime(get("ccb7"), tsToSet, tzHours)
-		fmt.Println("after:")
-		printTime(get("ccb7"))
+		if verbose {
+			fmt.Println("after:")
+			printTime(get("ccb7"))
+		}
 	case "set-unit":
 		var b byte
 		switch os.Args[2] {
@@ -124,6 +154,7 @@ func main() {
 			os.Exit(2)
 		}
 		writeByte(get("ccbe"), b)
+		fmt.Println("Display unit set to", unitName(b))
 	case "raw-unit":
 		raw, err := hex.DecodeString(os.Args[2])
 		must("parse hex", err)
@@ -146,6 +177,7 @@ func doScan() {
 		}
 	}
 	seen := map[string]bool{}
+	clocks := 0
 	go func() {
 		err := adapter.Scan(func(a *bluetooth.Adapter, d bluetooth.ScanResult) {
 			addr := d.Address.String()
@@ -158,6 +190,7 @@ func doScan() {
 				return
 			}
 			if isClock {
+				clocks++
 				fmt.Printf("LYWSD02 %s (address %s, rssi %d)\n", mac, addr, d.RSSI)
 				return
 			}
@@ -175,6 +208,9 @@ func doScan() {
 	}()
 	time.Sleep(time.Duration(secs) * time.Second)
 	adapter.StopScan()
+	if clocks == 0 {
+		fmt.Fprintln(os.Stderr, "no LYWSD02 clocks found")
+	}
 }
 
 func mustSvc() bluetooth.UUID {
@@ -221,7 +257,7 @@ func matches(d bluetooth.ScanResult) bool {
 func connect() bluetooth.Device {
 	var mu sync.Mutex
 	cands := map[string]bluetooth.ScanResult{} // by address
-	fmt.Println("scanning...")
+	verbosef("scanning...")
 	go func() {
 		err := adapter.Scan(func(a *bluetooth.Adapter, d bluetooth.ScanResult) {
 			if !matches(d) {
@@ -267,16 +303,16 @@ func connect() bluetooth.Device {
 		fatal("device " + target + " not found in 30s (try 'miaoclock scan')")
 	case 1:
 	default:
-		fmt.Println("several LYWSD02 clocks in range; pick one with -d or MIAOCLOCK_DEVICE:")
+		fmt.Fprintln(os.Stderr, "miaoclock: several LYWSD02 clocks in range; pick one with -d or MIAOCLOCK_DEVICE:")
 		for _, d := range cands {
 			mac, _ := lywsdMAC(d)
-			fmt.Printf("  %s (address %s, rssi %d)\n", mac, d.Address.String(), d.RSSI)
+			fmt.Fprintf(os.Stderr, "  %s (address %s, rssi %d)\n", mac, d.Address.String(), d.RSSI)
 		}
 		os.Exit(2)
 	}
 	for _, found := range cands {
 		if mac, ok := lywsdMAC(found); ok {
-			fmt.Printf("using %s (address %s)\n", mac, found.Address.String())
+			verbosef("using %s (address %s)", mac, found.Address.String())
 		}
 		dev, err := adapter.Connect(found.Address, bluetooth.ConnectionParams{})
 		must("connect", err)
@@ -296,28 +332,41 @@ func readAll(c bluetooth.DeviceCharacteristic) []byte {
 func writeByte(c bluetooth.DeviceCharacteristic, b byte) {
 	_, err := c.Write([]byte{b})
 	must("write", err)
-	fmt.Printf("wrote %02x\n", b)
+	verbosef("wrote %02x", b)
 }
 
-func doRead(get func(string) bluetooth.DeviceCharacteristic) {
-	printTime(get("ccb7"))
-	u := readAll(get("ccbe"))
-	unit := "?"
-	if len(u) > 0 {
-		switch u[0] {
-		case unitByteF:
-			unit = "Fahrenheit"
-		case unitByteC:
-			unit = "Celsius"
-		}
-		fmt.Printf("unit byte: %02x (%s)\n", u[0], unit)
+// unitName names a unit byte; isFahrenheit reports whether it selects °F.
+func unitName(b byte) string {
+	switch b {
+	case unitByteF:
+		return "Fahrenheit"
+	case unitByteC:
+		return "Celsius"
 	}
-	if b := readAll(get("ccc4")); len(b) > 0 {
-		fmt.Printf("battery: %d%%\n", b[0])
-	}
+	return fmt.Sprintf("unknown (0x%02x)", b)
+}
 
+func isFahrenheit(b byte) bool { return b == unitByteF }
+
+// fmtTemp formats a temperature given in °C in the requested unit.
+func fmtTemp(c float64, fahrenheit bool) string {
+	if fahrenheit {
+		return fmt.Sprintf("%.1f °F", c*9/5+32)
+	}
+	return fmt.Sprintf("%.1f °C", c)
+}
+
+// fmtClock renders a clock value the way the display does: the UTC timestamp
+// shifted by the timezone byte.
+func fmtClock(ts int64, tz int8) string {
+	t := time.Unix(ts, 0).UTC().Add(time.Duration(tz) * time.Hour)
+	return fmt.Sprintf("%s (UTC%+03d:00)", t.Format("2006-01-02 15:04:05"), tz)
+}
+
+// waitReading waits for one live temperature (°C) and humidity (%) notification.
+func waitReading(c bluetooth.DeviceCharacteristic) (float64, int, bool) {
 	got := make(chan []byte, 1)
-	err := get("ccc1").EnableNotifications(func(b []byte) {
+	err := c.EnableNotifications(func(b []byte) {
 		select {
 		case got <- append([]byte(nil), b...):
 		default:
@@ -327,16 +376,55 @@ func doRead(get func(string) bluetooth.DeviceCharacteristic) {
 	select {
 	case b := <-got:
 		if len(b) >= 3 {
-			t := float64(int16(binary.LittleEndian.Uint16(b))) / 100
-			fmt.Printf("temperature: %.2f °C / %.1f °F\nhumidity: %d%%\n", t, t*9/5+32, b[2])
+			return float64(int16(binary.LittleEndian.Uint16(b))) / 100, int(b[2]), true
 		}
 	case <-time.After(15 * time.Second):
-		fmt.Println("no temperature notification within 15s")
+	}
+	return 0, 0, false
+}
+
+func doRead(get func(string) bluetooth.DeviceCharacteristic) {
+	tb := readAll(get("ccb7"))
+	ub := readAll(get("ccbe"))
+	bb := readAll(get("ccc4"))
+	temp, hum, ok := waitReading(get("ccc1"))
+
+	if verbose {
+		printClockRaw(tb)
+		if len(ub) > 0 {
+			fmt.Printf("unit byte: %02x (%s)\n", ub[0], unitName(ub[0]))
+		}
+		if len(bb) > 0 {
+			fmt.Printf("battery: %d%%\n", bb[0])
+		}
+		if ok {
+			fmt.Printf("temperature: %.2f °C / %.1f °F\nhumidity: %d%%\n", temp, temp*9/5+32, hum)
+		}
+	} else {
+		if len(tb) >= 5 {
+			fmt.Printf("Time:         %s\n", fmtClock(int64(binary.LittleEndian.Uint32(tb)), int8(tb[4])))
+		}
+		f := false
+		if len(ub) > 0 {
+			f = isFahrenheit(ub[0])
+			fmt.Printf("Unit:         %s\n", unitName(ub[0]))
+		}
+		if len(bb) > 0 {
+			fmt.Printf("Battery:      %d%%\n", bb[0])
+		}
+		if ok {
+			fmt.Printf("Temperature:  %s\n", fmtTemp(temp, f))
+			fmt.Printf("Humidity:     %d%%\n", hum)
+		}
+	}
+	if !ok {
+		fatal("no temperature reading received within 15s")
 	}
 }
 
-func printTime(c bluetooth.DeviceCharacteristic) {
-	b := readAll(c)
+func printTime(c bluetooth.DeviceCharacteristic) { printClockRaw(readAll(c)) }
+
+func printClockRaw(b []byte) {
 	if len(b) < 5 {
 		fmt.Printf("clock: unexpected %x\n", b)
 		return
@@ -380,31 +468,69 @@ func setTime(c bluetooth.DeviceCharacteristic, t time.Time, tz int) {
 	b[4] = byte(int8(tz))
 	_, err := c.Write(b)
 	must("write time", err)
-	fmt.Printf("wrote time %x (%s, tz %+d)\n", b, t.Format(time.RFC3339), tz)
+	if verbose {
+		fmt.Printf("wrote time %x (%s, tz %+d)\n", b, t.Format(time.RFC3339), tz)
+	} else {
+		fmt.Println("Clock set to", fmtClock(t.Unix(), int8(tz)))
+	}
 }
 
-// doPoll is read-only. It snapshots every readable characteristic of the clock
-// service every 2s and prints only the ones that changed (the clock's own
-// ticking timestamp in ccb7/ccbb is shown but flagged as expected noise).
-func doPoll(byID map[string]bluetooth.DeviceCharacteristic, live bluetooth.DeviceCharacteristic) {
+// doPoll is read-only. By default it prints each new live temperature/humidity
+// reading. With -v it instead snapshots every readable characteristic every 2s
+// and prints the ones that changed (the clock's own ticking timestamp in
+// ccb7/ccbb is expected noise).
+func doPoll(byID map[string]bluetooth.DeviceCharacteristic, get func(string) bluetooth.DeviceCharacteristic) {
 	secs := 180
 	if len(os.Args) > 2 {
-		fmt.Sscanf(os.Args[2], "%d", &secs)
-	}
-	short := func(id string) string { return id[4:8] } // ebe0XXXX-...
-	var env struct{ t, h string }
-	_ = live.EnableNotifications(func(b []byte) {
-		if len(b) >= 3 {
-			env.t = fmt.Sprintf("%.2fC", float64(int16(binary.LittleEndian.Uint16(b)))/100)
-			env.h = fmt.Sprintf("%d%%", b[2])
+		if _, err := fmt.Sscanf(os.Args[2], "%d", &secs); err != nil {
+			fmt.Println(usage)
+			os.Exit(2)
 		}
-	})
+	}
+	var mu sync.Mutex
+	var t float64
+	var h int
+	have := false
+	must("subscribe", get("ccc1").EnableNotifications(func(b []byte) {
+		if len(b) >= 3 {
+			mu.Lock()
+			t, h, have = float64(int16(binary.LittleEndian.Uint16(b)))/100, int(b[2]), true
+			mu.Unlock()
+		}
+	}))
+	latest := func() (float64, int, bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		return t, h, have
+	}
+	deadline := time.Now().Add(time.Duration(secs) * time.Second)
 
+	if !verbose {
+		f := false
+		if ub := readAll(get("ccbe")); len(ub) > 0 {
+			f = isFahrenheit(ub[0])
+		}
+		fmt.Println("Time      Temperature  Humidity")
+		last := ""
+		for time.Now().Before(deadline) {
+			if ct, ch, ok := latest(); ok {
+				// Compare what is printed, so sub-display-precision jitter is ignored.
+				if line := fmt.Sprintf("%-11s  %d%%", fmtTemp(ct, f), ch); line != last {
+					last = line
+					fmt.Printf("%s  %s\n", time.Now().Format("15:04:05"), line)
+				}
+			}
+			time.Sleep(time.Second)
+		}
+		return
+	}
+
+	short := func(id string) string { return id[4:8] } // ebe0XXXX-...
 	prev := map[string]string{}
 	skip := map[string]bool{short(uuid("ccbc").String()): true} // history, notify-only
 	start := time.Now()
 	lastEnv := ""
-	for time.Since(start) < time.Duration(secs)*time.Second {
+	for time.Now().Before(deadline) {
 		stamp := time.Since(start).Round(time.Second)
 		for id, c := range byID {
 			s := short(id)
@@ -424,9 +550,11 @@ func doPoll(byID map[string]bluetooth.DeviceCharacteristic, live bluetooth.Devic
 			}
 			prev[s] = cur
 		}
-		if e := env.t + " " + env.h; e != lastEnv {
-			fmt.Printf("[%v] live temp/humidity: %s\n", stamp, e)
-			lastEnv = e
+		if ct, ch, ok := latest(); ok {
+			if e := fmt.Sprintf("%.2fC %d%%", ct, ch); e != lastEnv {
+				fmt.Printf("[%v] live temp/humidity: %s\n", stamp, e)
+				lastEnv = e
+			}
 		}
 		time.Sleep(2 * time.Second)
 	}
@@ -454,7 +582,7 @@ func doHistory(c bluetooth.DeviceCharacteristic) {
 	for time.Since(last) < 5*time.Second {
 		time.Sleep(500 * time.Millisecond)
 	}
-	fmt.Fprintf(os.Stderr, "%d records\n", count)
+	verbosef("%d records", count)
 }
 
 // fatal logs an error and exits with status 1.

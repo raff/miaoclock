@@ -37,14 +37,34 @@ accepts that platform address (the UUID on macOS) if you prefer.
 | Command | What it does |
 |---|---|
 | `scan [seconds] [--all]` | Lists nearby LYWSD02 clocks with their MAC (default 10 s). `--all` also shows every other BLE device |
-| `read` | Clock, unit, battery, plus one live temperature/humidity reading |
-| `history` | Dumps stored hourly records as CSV (`idx,time,tmax_c,hmax,tmin_c,hmin`) on stdout; count on stderr |
-| `poll [seconds]` | Read-only: snapshots every readable characteristic every 2 s and prints what changes (default 180 s) |
+| `read` | Time, unit, battery, temperature and humidity |
+| `history` | Prints the stored hourly records as CSV (`idx,time,tmax_c,hmax,tmin_c,hmin`, temperatures in °C) on stdout; takes about a minute |
+| `poll [seconds]` | Watches live temperature and humidity and prints each change (default 180 s). With `-v`, snapshots every readable characteristic every 2 s and prints the raw changes instead |
 | `set-time now` | Sets the clock from this computer's time and timezone offset |
 | `set-time <RFC3339>` | Sets a specific time, e.g. `2026-11-16T18:30:00-08:00`; the string's offset becomes the timezone byte |
 | `set-time ... --tz <h>` | Overrides the timezone byte (whole hours from UTC, -12..14) |
 | `set-unit c\|f` | Switches the display between Celsius and Fahrenheit |
 | `raw-unit <hex>` | Writes raw bytes to the unit characteristic (for probing) |
+
+### Output and `-v`
+
+By default the output is meant for people, and only data goes to stdout, so redirecting (`miaoclock history > h.csv`)
+gives a clean file. Errors go to stderr and exit with status 1.
+
+```
+$ ./miaoclock read
+Time:         2026-11-16 17:45:13 (UTC-08:00)
+Unit:         Fahrenheit
+Battery:      24%
+Temperature:  72.9 °F
+Humidity:     60%
+```
+
+The time is shown the way the clock's display shows it (UTC timestamp plus the timezone byte).
+
+`-v` / `--verbose` (before the command, e.g. `./miaoclock -v read`) adds progress messages on stderr (`scanning...`,
+`using <MAC>`) and switches to the raw technical view: the unix time and timezone byte, the unit byte, both
+temperature units, raw bytes written by `set-time`, and the raw characteristic changes in `poll`.
 
 ## BLE protocol
 
