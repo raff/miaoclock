@@ -1,0 +1,13 @@
+# Built binary
+/miaoclock
+
+# Go
+*.test
+*.out
+/vendor/
+
+# macOS / editors
+.DS_Store
+.idea/
+.vscode/
+*.swp
