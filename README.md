@@ -1,4 +1,4 @@
-# miaoclock
+# miaoclock (^_^)
 
 A small Go CLI (using [tinygo.org/x/bluetooth](https://github.com/tinygo-org/bluetooth)) to read from and configure a
 Xiaomi / Miaomiaoce **LYWSD02** BLE clock with temperature and humidity sensor. `LYWSD02` is also the device name
