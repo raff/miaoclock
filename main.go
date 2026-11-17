@@ -19,7 +19,8 @@ var target = os.Getenv("MIAOCLOCK_DEVICE")
 
 const usage = `usage: miaoclock [-d <mac|address>] <command>
   -d, --device      which clock to use (default: $MIAOCLOCK_DEVICE, else auto-detect a single LYWSD02)
-  scan [seconds]    list nearby BLE devices; LYWSD02 clocks are marked with their MAC
+  scan [seconds] [--all]
+                    list nearby LYWSD02 clocks with their MAC (--all: every BLE device)
   read             temperature, humidity, battery, clock, unit
   history           dump stored hourly min/max records
   poll [seconds]    read-only: watch all readable characteristics, print changes (default 180s)
@@ -135,8 +136,14 @@ func main() {
 // doScan lists nearby BLE devices with what they advertise (read-only).
 func doScan() {
 	secs := 10
-	if len(os.Args) > 2 {
-		fmt.Sscanf(os.Args[2], "%d", &secs)
+	all := false
+	for _, a := range os.Args[2:] {
+		if a == "--all" {
+			all = true
+		} else if _, err := fmt.Sscanf(a, "%d", &secs); err != nil {
+			fmt.Println(usage)
+			os.Exit(2)
+		}
 	}
 	seen := map[string]bool{}
 	go func() {
@@ -146,23 +153,23 @@ func doScan() {
 				return
 			}
 			seen[addr] = true
+			mac, isClock := lywsdMAC(d)
+			if !isClock && !all {
+				return
+			}
+			if isClock {
+				fmt.Printf("LYWSD02 %s (address %s, rssi %d)\n", mac, addr, d.RSSI)
+				return
+			}
 			var svcs []string
 			for _, u := range d.ServiceUUIDs() {
 				svcs = append(svcs, u.String())
-			}
-			var mfr []string
-			for _, m := range d.ManufacturerData() {
-				mfr = append(mfr, fmt.Sprintf("%04x:%x", m.CompanyID, m.Data))
 			}
 			var sd []string
 			for _, s := range d.ServiceData() {
 				sd = append(sd, fmt.Sprintf("%s:%x", s.UUID.String(), s.Data))
 			}
-			mark := ""
-			if mac, ok := lywsdMAC(d); ok {
-				mark = "  <== LYWSD02 MAC " + mac
-			}
-			fmt.Printf("%s rssi=%d name=%q services=%v mfr=%v svcdata=%v%s\n", addr, d.RSSI, d.LocalName(), svcs, mfr, sd, mark)
+			fmt.Printf("other   %s rssi=%d name=%q services=%v svcdata=%v\n", addr, d.RSSI, d.LocalName(), svcs, sd)
 		})
 		must("scan", err)
 	}()

@@ -23,7 +23,7 @@ By default `miaoclock` scans for about 5 seconds and uses the LYWSD02 it finds. 
 them and exits so you can choose. To pick one explicitly, give its MAC address:
 
 ```
-./miaoclock scan                       # lists nearby devices; clocks are marked "<== LYWSD02 MAC ..."
+./miaoclock scan                       # lists nearby LYWSD02 clocks and their MACs
 ./miaoclock -d AA:BB:CC:DD:EE:FF read  # or: export MIAOCLOCK_DEVICE=AA:BB:CC:DD:EE:FF
 ```
 
@@ -36,7 +36,7 @@ accepts that platform address (the UUID on macOS) if you prefer.
 
 | Command | What it does |
 |---|---|
-| `scan [seconds]` | Lists nearby BLE devices with their advertised data; LYWSD02 clocks are marked with their MAC (default 10 s) |
+| `scan [seconds] [--all]` | Lists nearby LYWSD02 clocks with their MAC (default 10 s). `--all` also shows every other BLE device |
 | `read` | Clock, unit, battery, plus one live temperature/humidity reading |
 | `history` | Dumps stored hourly records as CSV (`idx,time,tmax_c,hmax,tmin_c,hmin`) on stdout; count on stderr |
 | `poll [seconds]` | Read-only: snapshots every readable characteristic every 2 s and prints what changes (default 180 s) |
