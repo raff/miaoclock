@@ -33,10 +33,12 @@ const usage = `usage: miaoclock [-d <mac|address>] [-v] <command>
   -v, --verbose     show progress messages and raw technical details
   scan [seconds] [--all]
                     list nearby LYWSD02 clocks with their MAC (--all: every BLE device)
-  read              show time, unit, battery, temperature and humidity
+  read              show time, temperature (C and F), humidity, unit, battery.
+                    This is the default with no command.
   history           print the stored hourly min/max records as CSV
-  poll [seconds]    watch live temperature and humidity (default 180s);
-                    with -v, show every raw characteristic change instead
+  poll [seconds]    live monitor: print time, temperature and humidity on every change
+                    (default 180s). With -v, show every raw characteristic change instead
+  help              show this text
   set-time now|<RFC3339> [--tz <hours>]
                     set the clock: "now" uses this computer's time and timezone;
                     otherwise e.g. 2026-11-16T18:30:00-08:00 (offset becomes the clock's tz)
@@ -82,11 +84,13 @@ parse:
 	}
 	os.Args = append([]string{os.Args[0]}, args...)
 	if len(os.Args) < 2 {
-		fmt.Println(usage)
-		os.Exit(2)
+		os.Args = append(os.Args, "read") // default: show the current values
 	}
 	cmd := os.Args[1]
 	switch cmd {
+	case "-h", "--help", "help":
+		fmt.Println(usage)
+		return
 	case "scan":
 		must("enable BLE stack", adapter.Enable())
 		doScan()
@@ -404,17 +408,15 @@ func doRead(get func(string) bluetooth.DeviceCharacteristic) {
 		if len(tb) >= 5 {
 			fmt.Printf("Time:         %s\n", fmtClock(int64(binary.LittleEndian.Uint32(tb)), int8(tb[4])))
 		}
-		f := false
+		if ok {
+			fmt.Printf("Temperature:  %.1f °C / %.1f °F\n", temp, temp*9/5+32)
+			fmt.Printf("Humidity:     %d%%\n", hum)
+		}
 		if len(ub) > 0 {
-			f = isFahrenheit(ub[0])
 			fmt.Printf("Unit:         %s\n", unitName(ub[0]))
 		}
 		if len(bb) > 0 {
 			fmt.Printf("Battery:      %d%%\n", bb[0])
-		}
-		if ok {
-			fmt.Printf("Temperature:  %s\n", fmtTemp(temp, f))
-			fmt.Printf("Humidity:     %d%%\n", hum)
 		}
 	}
 	if !ok {
@@ -506,16 +508,12 @@ func doPoll(byID map[string]bluetooth.DeviceCharacteristic, get func(string) blu
 	deadline := time.Now().Add(time.Duration(secs) * time.Second)
 
 	if !verbose {
-		f := false
-		if ub := readAll(get("ccbe")); len(ub) > 0 {
-			f = isFahrenheit(ub[0])
-		}
-		fmt.Println("Time      Temperature  Humidity")
+		fmt.Println("Time      Temperature          Humidity")
 		last := ""
 		for time.Now().Before(deadline) {
 			if ct, ch, ok := latest(); ok {
 				// Compare what is printed, so sub-display-precision jitter is ignored.
-				if line := fmt.Sprintf("%-11s  %d%%", fmtTemp(ct, f), ch); line != last {
+				if line := fmt.Sprintf("%.1f °C / %.1f °F   %d%%", ct, ct*9/5+32, ch); line != last {
 					last = line
 					fmt.Printf("%s  %s\n", time.Now().Format("15:04:05"), line)
 				}
